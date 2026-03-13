@@ -52,23 +52,29 @@ async def chat_stream(
 
     async def event_generator():
         full_response = ""
+        stream_error = None
         try:
             async for chunk in stream_chat(messages):
                 full_response += chunk
                 yield {"event": "message", "data": json.dumps({"content": chunk})}
         except Exception as e:
+            stream_error = e
             yield {"event": "error", "data": json.dumps({"error": str(e)})}
-            return
+        finally:
+            if full_response:
+                try:
+                    async with async_session() as save_db:
+                        assistant_message = Message(
+                            conversation_id=conversation.id,
+                            role="assistant",
+                            content=full_response,
+                        )
+                        save_db.add(assistant_message)
+                        await save_db.commit()
+                except Exception:
+                    pass
 
-        async with async_session() as save_db:
-            assistant_message = Message(
-                conversation_id=conversation.id,
-                role="assistant",
-                content=full_response,
-            )
-            save_db.add(assistant_message)
-            await save_db.commit()
-
-        yield {"event": "done", "data": json.dumps({"content": full_response})}
+        if stream_error is None:
+            yield {"event": "done", "data": json.dumps({"content": full_response})}
 
     return EventSourceResponse(event_generator())
